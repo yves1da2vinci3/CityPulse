@@ -6,15 +6,13 @@
 
 ## Avertissement — projet fictif
 
-CityPulse est un **projet pédagogique fictif**. Il simule une plateforme de télémétrie pour bus urbains (type flotte SOTRA / smart city) dans le but d’apprendre Apache Kafka de bout en bout. Il ne s’agit pas d’un produit réel, d’un opérateur de transport ni d’un déploiement en production en Côte d’Ivoire. Noms, bus Abidjan (`BUS-001`, coordonnées `5.35, -4.01`) et métriques illustrent un cas d’école uniquement.
+CityPulse est un **projet pédagogique fictif**. Il simule une plateforme de télémétrie pour bus urbains (type flotte SOTRA / smart city) dans le but d’apprendre Apache Kafka de bout en bout. Il ne s’agit pas d’un produit réel, d’un opérateur de transport ni d’un déploiement en production en Côte d’Ivoire. Noms, bus Abidjan (`BUS-001`, coordonnées `5.35, -4.01`) et métriques illustrent un scénario fictif uniquement.
 
 ## À propos
 
-**CityPulse** est une **simulation** d’ingestion et de traitement d’événements GPS — un **cas d’école** conçu pour construire une architecture événementielle résiliente avec Kafka KRaft : producer HTTP, plusieurs consumer groups, clé de partition, retry / DLQ, idempotence, transactions EOS, fenêtres de stream et sink Postgres.
+**CityPulse** est une **simulation** d’ingestion et de traitement d’événements GPS — conçue pour implémenter une architecture événementielle résiliente avec Kafka KRaft : producer HTTP, plusieurs consumer groups, clé de partition, retry / DLQ, idempotence, transactions EOS, fenêtres de stream et sink Postgres.
 
-Le scénario cible un déploiement régional centré sur **Abidjan** et la **Côte d’Ivoire** : chaque bus émet de la télémétrie, les alertes de vitesse excessive alimentent un hub régional.
-
-Module Go : `github.com/yves1da2vinci3/CityPulse`. Le parcours pas-à-pas vit dans l’ebook [`../docs/cityPulse/implementation/`](../docs/cityPulse/implementation/README.md).
+Le système cible un déploiement régional centré sur **Abidjan** et la **Côte d’Ivoire** : chaque bus émet de la télémétrie, les alertes de vitesse excessive alimentent un hub régional.
 
 ## Architecture
 
@@ -29,7 +27,7 @@ Module Go : `github.com/yves1da2vinci3/CityPulse`. Le parcours pas-à-pas vit da
 | **`cmd/alert`** | Consumer group `alert` — signale les vitesses excessives |
 | **`cmd/stream`** | Filtre `speed > 100` + moyenne par `vehicle_id` (fenêtre tumbling 5 min) → `statistics.events` |
 | **`cmd/eos-alert`** | Read-process-write transactionnel → `alerts.events` (exactly-once) |
-| **Kafka Connect JDBC** | Sink vers Postgres 16 (chemin Connect de l’ebook) |
+| **Kafka Connect JDBC** | Sink vers Postgres 16 |
 
 ### Topics
 
@@ -119,7 +117,7 @@ flowchart TB
 
 - Retry puis routage vers `telemetry.dlq`
 - Dedup côté consumer via `event_id`
-- Producer idempotent + `acks` adaptés (chemin reliability de l’ebook)
+- Producer idempotent + `acks` adaptés
 
 **Comportement attendu :** Poison message visible en DLQ ; republier le même `event_id` n’alerte qu’une fois.
 
@@ -145,7 +143,7 @@ flowchart TB
 - Lag via `kafka-consumer-groups`
 - Overlay SASL/PLAIN + ACL (sans casser le chemin PLAINTEXT critique)
 
-**Comportement attendu :** Démo runbook : `BUS-001` à 42 km/h (flux normal) puis 125 km/h (alerte) ; lag ~0 sur les groups actifs.
+**Comportement attendu :** `BUS-001` à 42 km/h (flux normal) puis 125 km/h (alerte) ; lag ~0 sur les groups actifs.
 
 ## Stack technique
 
@@ -159,25 +157,25 @@ flowchart TB
 
 ## Quick Start
 
-Le parcours se suit dans l’ebook — chaque chapitre ajoute une brique vérifiable (Done when + checkpoint git).
-
-1. Ouvre [`../docs/cityPulse/implementation/README.md`](../docs/cityPulse/implementation/README.md) et suis l’ordre de lecture (parties 00 → 14).
-2. Depuis ce repo :
+Prérequis : Docker Compose + Go ≥ 1.22.
 
 ```bash
-export CITYPULSE_ROOT="$(pwd)"
 export KAFKA_BROKERS=localhost:9092
-```
 
-3. Après les chapitres fondations + telemetry + consumers, scénario démo du runbook :
-
-```bash
-cd "$CITYPULSE_ROOT/deployments/kafka"
+cd deployments/kafka
 docker compose up -d
 
-cd "$CITYPULSE_ROOT"
-go run ./cmd/telemetry   # terminaux séparés pour analytics, storage, alert
+cd ../..
+go run ./cmd/telemetry
+# autres terminaux :
+go run ./cmd/analytics
+go run ./cmd/storage
+go run ./cmd/alert
+```
 
+Test manuel :
+
+```bash
 curl -s -X POST http://localhost:8080/telemetry -H 'Content-Type: application/json' \
   -d '{"vehicle_id":"BUS-001","latitude":5.35,"longitude":-4.01,"speed":42}'
 
@@ -187,36 +185,27 @@ curl -s -X POST http://localhost:8080/telemetry -H 'Content-Type: application/js
 
 Attendu : analytics / storage loggent les 2 events ; alert (ou stream / eos-alert) signale le speeding sur 125.
 
-Runbook complet : [`../docs/cityPulse/implementation/14-livrables/00-runbook.md`](../docs/cityPulse/implementation/14-livrables/00-runbook.md).
+## Checklist Scalabilité et Robustesse
 
-## Checklist parcours ebook
+> Projet fictif — checklist indiquant ce qui est implémenté vs extensions prod futures.
 
-> Projet fictif pédagogique — ce que l’ebook fait construire vs extensions hors scope.
+### Scalabilité
 
-### Couvert par l’ebook
-
-- [x] **Infra KRaft locale (Compose)** — *Pourquoi* : ZooKeeper ajoute de la friction sans gain pour le lab. *Sert à* : un broker (puis 3 nœuds) prêt en une commande.
+- [x] **Infra KRaft locale (Compose)** — *Pourquoi* : ZooKeeper ajoute de la friction sans gain. *Sert à* : un broker (puis 3 nœuds) prêt en une commande.
 - [x] **Producer HTTP + contrat JSON / Protobuf** — *Pourquoi* : le client métier ne parle pas Kafka. *Sert à* : valider et produire des `TelemetryEvent` typés.
 - [x] **3 consumer groups sur le même topic** — *Pourquoi* : un seul consumer = couplage. *Sert à* : analytics, storage et alert indépendants.
 - [x] **Clé `vehicle_id`** — *Pourquoi* : sans clé, l’ordre par bus est aléatoire. *Sert à* : sticky partition + ordering.
-- [x] **Retry + DLQ + idempotence `event_id`** — *Pourquoi* : poison et doublons HTTP sont réalistes. *Sert à* : files d’erreurs et alertes uniques.
-- [x] **Acks / producer idempotent** — *Pourquoi* : perte silencieuse côté producteur. *Sert à* : reliability du chemin critique.
-- [x] **Cluster 3 nœuds + transactions EOS** — *Pourquoi* : mono-nœud et at-least-once ne suffisent pas pour les alertes. *Sert à* : HA lab + exactly-once alert.
+- [x] **Cluster 3 nœuds KRaft** — *Pourquoi* : mono-nœud = single point of failure. *Sert à* : redondance locale.
 - [x] **Stream fenêtre 5 min + Connect Postgres** — *Pourquoi* : Kafka seul n’agrège ni ne stocke en SQL. *Sert à* : stats et sink JDBC.
-- [x] **Lag + SASL/PLAIN ACL + `go test`** — *Pourquoi* : sans lag visible et sans auth, le lab s’arrête trop tôt. *Sert à* : obs minimale et overlay sécu.
-- [x] **Runbook démo bout-en-bout** — *Pourquoi* : les chapitres isolés ne prouvent pas la chaîne. *Sert à* : checklist livrable.
-
-### Hors scope (extensions futures)
-
 - [ ] **Grafana / Prometheus** — *Pourquoi* : le lag CLI est un snapshot. *Sert à* : dashboards et alertes continues.
 - [ ] **Multi-région / MirrorMaker** — *Pourquoi* : un cluster Abidjan ne couvre pas plusieurs pays. *Sert à* : réplication inter-régions.
-- [ ] **Schema Registry** — *Pourquoi* : Protobuf local suffit au lab. *Sert à* : gouvernance de schémas en équipe.
-- [ ] **Auth HTTP (JWT) + rate limiting** — *Pourquoi* : `/telemetry` ouvert en lab. *Sert à* : contrôler qui injecte en prod-like.
+- [ ] **Schema Registry** — *Pourquoi* : Protobuf local suffit ici. *Sert à* : gouvernance de schémas en équipe.
+
+### Robustesse
+
+- [x] **Retry + DLQ + idempotence `event_id`** — *Pourquoi* : poison et doublons HTTP sont réalistes. *Sert à* : files d’erreurs et alertes uniques.
+- [x] **Acks / producer idempotent** — *Pourquoi* : perte silencieuse côté producteur. *Sert à* : reliability du chemin critique.
+- [x] **Transactions EOS (`eos-alert`)** — *Pourquoi* : at-least-once ne suffit pas pour les alertes. *Sert à* : write alerte + commit offset atomiques.
+- [x] **Lag + SASL/PLAIN ACL + `go test`** — *Pourquoi* : sans lag visible et sans auth, le debug est aveugle. *Sert à* : observabilité minimale et overlay sécu.
+- [ ] **Auth HTTP (JWT) + rate limiting** — *Pourquoi* : `/telemetry` ouvert par défaut. *Sert à* : contrôler qui injecte.
 - [ ] **UI carte temps réel** — *Pourquoi* : hors objectif Kafka. *Sert à* : visualisation métier des bus.
-
-## Documentation
-
-- Ebook pas-à-pas : [`../docs/cityPulse/implementation/README.md`](../docs/cityPulse/implementation/README.md)
-- Checkpoints / tags : [`../docs/cityPulse/implementation/CHECKPOINTS.md`](../docs/cityPulse/implementation/CHECKPOINTS.md)
-- Journal de progression : [`../docs/cityPulse/implementation/JOURNAL.md`](../docs/cityPulse/implementation/JOURNAL.md)
-- Runbook démo : [`../docs/cityPulse/implementation/14-livrables/00-runbook.md`](../docs/cityPulse/implementation/14-livrables/00-runbook.md)
