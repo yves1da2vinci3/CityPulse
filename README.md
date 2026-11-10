@@ -2,7 +2,7 @@
 
 ![Cover — CityPulse : télémétrie transport urbain](assets/coverImage.jpg)
 
-> Télémétrie transport urbain en temps réel — Go + franz-go + Kafka KRaft : producer HTTP, consumer groups, partitions, DLQ, EOS, stream, Connect
+> Télémétrie transport urbain en temps réel — Go + franz-go + Kafka KRaft : producer HTTP, consumer groups, partitions, DLQ, EOS, stream, Postgres
 
 ## Avertissement — projet fictif
 
@@ -10,9 +10,11 @@ CityPulse est un **projet pédagogique fictif**. Il simule une plateforme de té
 
 ## À propos
 
-**CityPulse** est une **simulation** d’ingestion et de traitement d’événements GPS — conçue pour implémenter une architecture événementielle résiliente avec Kafka KRaft : producer HTTP, plusieurs consumer groups, clé de partition, retry / DLQ, idempotence, transactions EOS, fenêtres de stream et sink Postgres.
+**CityPulse** est une **simulation** d’ingestion et de traitement d’événements GPS — architecture événementielle résiliente avec Kafka KRaft : producer HTTP (JSON in → Protobuf on wire), plusieurs consumer groups, clé de partition, retry / DLQ, idempotence `event_id`, transactions EOS, fenêtres de stream et persistance Postgres.
 
-Le système cible un déploiement régional centré sur **Abidjan** et la **Côte d’Ivoire** : chaque bus émet de la télémétrie, les alertes de vitesse excessive alimentent un hub régional.
+Le système cible un déploiement régional centré sur **Abidjan** et la **Côte d’Ivoire**.
+
+Module : `github.com/yves1da2vinci3/CityPulse`.
 
 ## Architecture
 
@@ -20,36 +22,40 @@ Le système cible un déploiement régional centré sur **Abidjan** et la **Côt
 
 | Composant | Rôle |
 |-----------|------|
-| **`cmd/telemetry`** | API HTTP `POST /telemetry` — valide le payload, génère `event_id`, produit sur Kafka |
-| **Kafka KRaft** | Cœur du système — topics, partitions, replication, consumer groups |
-| **`cmd/analytics`** | Consumer group `analytics` — lit `telemetry.events`, log la vitesse |
-| **`cmd/storage`** | Consumer group `storage` — même topic, persistance / traitement indépendant |
-| **`cmd/alert`** | Consumer group `alert` — signale les vitesses excessives |
-| **`cmd/stream`** | Filtre `speed > 100` + moyenne par `vehicle_id` (fenêtre tumbling 5 min) → `statistics.events` |
-| **`cmd/eos-alert`** | Read-process-write transactionnel → `alerts.events` (exactly-once) |
-| **Kafka Connect JDBC** | Sink vers Postgres 16 |
+| **`cmd/telemetry`** | `POST /telemetry` — JSON HTTP → Protobuf Kafka (`acks=all`) |
+| **`cmd/kafkaping`** | Smoke : joint le broker via `KAFKA_BROKERS` |
+| **Kafka KRaft** | Topics, partitions, replication, consumer groups |
+| **`cmd/analytics`** | Group `analytics` — log vitesse |
+| **`cmd/storage`** | Group `storage` — INSERT Postgres (`pgx`) |
+| **`cmd/alert`** | Group `alert` — speeding + retry/DLQ + dedup mémoire |
+| **`cmd/stream`** | Filtre `speed > 100` + moyenne tumbling 5 min → `statistics.events` |
+| **`cmd/eos-alert`** | Produce transactionnel → `alerts.events` |
+| **`cmd/json-bridge`** | Miroir proto → topic JSON `telemetry.json` (voie Connect) |
+| **`cmd/saslping`** | Smoke client SASL/PLAIN (overlay lab) |
 
 ### Topics
 
 | Topic | Usage |
 |-------|--------|
-| `telemetry.events` | Flux principal (clé = `vehicle_id`) |
-| `telemetry.dlq` | Messages poison / échecs de traitement |
-| `alerts.events` | Alertes vitesse (EOS ou filtre stream) |
-| `statistics.events` | Moyennes de vitesse par fenêtre 5 min |
+| `telemetry.events` | Flux principal (clé = `vehicle_id`, payload Protobuf) |
+| `telemetry.dlq` | Poison / échecs de decode |
+| `alerts.events` | Alertes vitesse (EOS / stream filter) |
+| `statistics.events` | Moyennes de vitesse fenêtre 5 min |
+| `telemetry.json` | Miroir JSON pour Connect (via `json-bridge`) |
 
 ### Flux global
 
 ```mermaid
 flowchart TB
     subgraph producer [Producer]
-        HTTP["POST /telemetry"]
+        HTTP["POST /telemetry JSON"]
     end
     subgraph kafka [Kafka KRaft]
-        Telemetry["telemetry.events\nkey: vehicle_id"]
+        Telemetry["telemetry.events\nProtobuf key vehicle_id"]
         DLQ["telemetry.dlq"]
         Alerts["alerts.events"]
         Stats["statistics.events"]
+        JSON["telemetry.json"]
     end
     subgraph consumers [Consumer groups]
         Analytics["analytics"]
@@ -57,123 +63,118 @@ flowchart TB
         Alert["alert"]
         Stream["stream"]
         Eos["eos-alert"]
+        Bridge["json-bridge"]
     end
     subgraph sink [Sink]
         PG["Postgres"]
     end
     HTTP --> Telemetry
     Telemetry --> Analytics
-    Telemetry --> Storage
+    Telemetry --> Storage --> PG
     Telemetry --> Alert
     Telemetry --> Stream
     Telemetry --> Eos
+    Telemetry --> Bridge --> JSON
     Telemetry -->|"poison / retry"| DLQ
     Stream -->|"speed > 100 + fenêtre 5m"| Stats
+    Stream -->|"SPEED_FILTER"| Alerts
     Eos -->|"tx EOS speed > 100"| Alerts
-    Telemetry --> PG
 ```
 
 ## Features
 
-### 1. Ingestion HTTP (JSON puis Protobuf)
+### 1. Ingestion HTTP → Protobuf
 
-**Scénario métier :** Les bus en circulation poussent position, vitesse et horodatage vers une API unique. Le producteur ne connaît pas les consommateurs.
+**Scénario :** les bus poussent position / vitesse / horodatage. HTTP parle JSON ; Kafka transporte Protobuf (`api/telemetry.proto`, champ optionnel `heading_deg`).
 
-**Implémentation Kafka :**
+**Impl :** `cmd/telemetry` + `events.MarshalProto` ; `event_id` généré si absent ; clé = `vehicle_id` ; `RequiredAcks(AllISRAcks)`.
 
-- `POST /telemetry` sur `:8080` (stdlib `net/http`)
-- Contrat `TelemetryEvent` : `event_id`, `vehicle_id`, `latitude`, `longitude`, `speed`, `timestamp`
-- Sérialisation JSON d’abord, puis Protobuf (`api/telemetry.proto`) avec évolution de schéma
-
-**Comportement attendu :** HTTP `202` = événement accepté et produit ; le client peut omettre `event_id` (généré côté serveur).
+**Attendu :** HTTP `202` + body JSON echo ; consumers lisent via `UnmarshalProto`.
 
 ### 2. Consumer groups indépendants
 
-**Scénario métier :** Analytics, stockage et alertes doivent traiter **le même** événement sans se bloquer mutuellement.
+**Scénario :** analytics, storage et alert traitent le **même** event sans se bloquer.
 
-**Implémentation Kafka :**
+**Impl :** groups `analytics`, `storage`, `alert` sur `telemetry.events`.
 
-- Trois groups sur `telemetry.events` : `analytics`, `storage`, `alert`
-- Chaque event est traité N fois (une par group)
+**Attendu :** un `curl` → logs dans les 3 process.
 
-**Comportement attendu :** Un `curl` unique apparaît dans les logs des trois process — découplage producer → Kafka → consumers.
+### 3. Clé `vehicle_id`
 
-### 3. Clé `vehicle_id` et ordre par bus
+**Scénario :** ordre relatif par bus.
 
-**Scénario métier :** Les positions d’un même bus doivent rester ordonnées pour le calcul de trajet et les alertes.
+**Impl :** clé Kafka = `vehicle_id`. Voir [docs/partitions-vehicle-id.md](docs/partitions-vehicle-id.md).
 
-**Implémentation Kafka :**
+### 4. Résilience — retry, DLQ, dedup, acks
 
-- Clé de message = `vehicle_id` (UTF-8)
-- Partitions : tous les events d’un bus vont sur la même partition
+**Scénario :** poison message et doublons HTTP.
 
-**Comportement attendu :** Ordre par véhicule garanti à l’intérieur d’une partition ; parallélisme entre bus.
+**Impl :** `internal/kafka/retry.go` → `telemetry.dlq` ; `internal/dedup` sur `event_id` dans `alert` ; producer `acks=all` (idempotence franz-go par défaut).
 
-### 4. Résilience — retry, DLQ, idempotence, acks
+### 5. Cluster HA + EOS
 
-**Scénario métier :** Un JSON cassé ou un doublon HTTP ne doit ni bloquer le group, ni créer deux alertes pour le même `event_id`.
+**Scénario :** alerte speeding atomique avec commit d’offset.
 
-**Implémentation Kafka :**
+**Impl :** [`deployments/kafka/docker-compose.ha.yml`](deployments/kafka/docker-compose.ha.yml) (3 nœuds RF=3) ; `cmd/eos-alert` + `TransactionalID`.
 
-- Retry puis routage vers `telemetry.dlq`
-- Dedup côté consumer via `event_id`
-- Producer idempotent + `acks` adaptés
+### 6. Stream, Postgres, lag, SASL
 
-**Comportement attendu :** Poison message visible en DLQ ; republier le même `event_id` n’alerte qu’une fois.
+**Scénario :** filtre vitesse, agrégats, SQL, lag, auth broker.
 
-### 5. Cluster KRaft 3 nœuds et transactions EOS
+**Impl :**
 
-**Scénario métier :** Une alerte de speeding doit être écrite sur `alerts.events` **atomiquement** avec le commit d’offset (pas d’alerte orpheline, pas de trou).
-
-**Implémentation Kafka :**
-
-- Compose HA : 3 brokers KRaft (`docker-compose.ha.yml`)
-- `cmd/eos-alert` : transaction read-process-write si `speed > 100`
-
-**Comportement attendu :** Alerte et offset commités ensemble — exactly-once semantics sur ce chemin.
-
-### 6. Stream, Connect, observabilité, sécurité
-
-**Scénario métier :** Filtrer les excès de vitesse, agréger par fenêtre, stocker en SQL, mesurer le lag, durcir l’accès.
-
-**Implémentation Kafka :**
-
-- `cmd/stream` : filtre immédiat + moyenne tumbling 5 min → `statistics.events`
-- Kafka Connect JDBC → Postgres 16
-- Lag via `kafka-consumer-groups`
-- Overlay SASL/PLAIN + ACL (sans casser le chemin PLAINTEXT critique)
-
-**Comportement attendu :** `BUS-001` à 42 km/h (flux normal) puis 125 km/h (alerte) ; lag ~0 sur les groups actifs.
+- `cmd/stream` → `statistics.events` / `alerts.events`
+- `cmd/storage` → table `telemetry` (Postgres 16 dans Compose)
+- Connect image dans Compose + `json-bridge` (voie JDBC optionnelle)
+- Lag : [docs/consumer-lag.md](docs/consumer-lag.md)
+- Overlay SASL : `docker-compose.sasl.yml` + `cmd/saslping` (PLAINTEXT inchangé)
 
 ## Stack technique
 
-- **Go** ≥ 1.22
-- **franz-go** (`github.com/twmb/franz-go`) — producer, consumer, transactions, admin
-- **`net/http`** — API `POST /telemetry`
-- **Docker Compose** — image `apache/kafka:3.9.1`, mode KRaft (sans ZooKeeper)
-- **Protobuf** (`protoc`) — sérialisation évolutive
-- **Kafka Connect JDBC** + **Postgres 16** — sink
-- Config via `os.Getenv` (`KAFKA_BROKERS=localhost:9092`)
+- **Go** 1.24.2 (`go.mod`)
+- **franz-go** v1.18.1 + **kadm**
+- **`net/http`** — ingest
+- **Protobuf** — `google.golang.org/protobuf` + `api/telemetry.proto`
+- **pgx/v5** — sink SQL
+- **Docker Compose** — `apache/kafka:3.9.1` KRaft ; Postgres 16 ; Connect optionnel
+- Config : `KAFKA_BROKERS`, `HTTP_ADDR`, `DATABASE_URL`
 
 ## Quick Start
 
-Prérequis : Docker Compose + Go ≥ 1.22.
+Prérequis : Docker Compose + Go ≥ 1.24.
 
 ```bash
 export KAFKA_BROKERS=localhost:9092
+export DATABASE_URL='postgres://citypulse:citypulse@localhost:5432/citypulse?sslmode=disable'
 
 cd deployments/kafka
 docker compose up -d
+sleep 10
+
+docker exec citypulse-kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 --create --if-not-exists \
+  --topic telemetry.events --partitions 3 --replication-factor 1
+
+docker exec -i citypulse-pg psql -U citypulse -d citypulse <<'SQL'
+CREATE TABLE IF NOT EXISTS telemetry (
+  event_id TEXT PRIMARY KEY,
+  vehicle_id TEXT,
+  latitude DOUBLE PRECISION,
+  longitude DOUBLE PRECISION,
+  speed DOUBLE PRECISION,
+  timestamp TIMESTAMPTZ,
+  heading_deg DOUBLE PRECISION
+);
+SQL
 
 cd ../..
+go run ./cmd/kafkaping
+# terminaux séparés :
 go run ./cmd/telemetry
-# autres terminaux :
 go run ./cmd/analytics
 go run ./cmd/storage
 go run ./cmd/alert
 ```
-
-Test manuel :
 
 ```bash
 curl -s -X POST http://localhost:8080/telemetry -H 'Content-Type: application/json' \
@@ -183,29 +184,45 @@ curl -s -X POST http://localhost:8080/telemetry -H 'Content-Type: application/js
   -d '{"vehicle_id":"BUS-001","latitude":5.36,"longitude":-4.01,"speed":125}'
 ```
 
-Attendu : analytics / storage loggent les 2 events ; alert (ou stream / eos-alert) signale le speeding sur 125.
+Attendu : analytics log ; storage `pg insert` ; alert `ALERT` sur 125.
+
+Runbook complet : [docs/runbook.md](docs/runbook.md).
+
+## Tests
+
+```bash
+go test ./internal/events ./internal/dedup
+# optionnel broker live :
+KAFKA_BROKERS=localhost:9092 go test ./internal/kafka -count=1
+```
 
 ## Checklist Scalabilité et Robustesse
 
-> Projet fictif — checklist indiquant ce qui est implémenté vs extensions prod futures.
+> Projet fictif — implémenté vs extensions futures.
 
 ### Scalabilité
 
-- [x] **Infra KRaft locale (Compose)** — *Pourquoi* : ZooKeeper ajoute de la friction sans gain. *Sert à* : un broker (puis 3 nœuds) prêt en une commande.
-- [x] **Producer HTTP + contrat JSON / Protobuf** — *Pourquoi* : le client métier ne parle pas Kafka. *Sert à* : valider et produire des `TelemetryEvent` typés.
-- [x] **3 consumer groups sur le même topic** — *Pourquoi* : un seul consumer = couplage. *Sert à* : analytics, storage et alert indépendants.
-- [x] **Clé `vehicle_id`** — *Pourquoi* : sans clé, l’ordre par bus est aléatoire. *Sert à* : sticky partition + ordering.
-- [x] **Cluster 3 nœuds KRaft** — *Pourquoi* : mono-nœud = single point of failure. *Sert à* : redondance locale.
-- [x] **Stream fenêtre 5 min + Connect Postgres** — *Pourquoi* : Kafka seul n’agrège ni ne stocke en SQL. *Sert à* : stats et sink JDBC.
-- [ ] **Grafana / Prometheus** — *Pourquoi* : le lag CLI est un snapshot. *Sert à* : dashboards et alertes continues.
-- [ ] **Multi-région / MirrorMaker** — *Pourquoi* : un cluster Abidjan ne couvre pas plusieurs pays. *Sert à* : réplication inter-régions.
-- [ ] **Schema Registry** — *Pourquoi* : Protobuf local suffit ici. *Sert à* : gouvernance de schémas en équipe.
+- [x] **Infra KRaft locale (Compose)** — mono-nœud + `docker-compose.ha.yml` 3 nœuds
+- [x] **Producer HTTP + Protobuf** — JSON in, proto on wire, `heading_deg` optionnel
+- [x] **3 consumer groups** — analytics / storage / alert
+- [x] **Clé `vehicle_id`** — sticky partition
+- [x] **Stream fenêtre 5 min** — `cmd/stream`
+- [x] **Postgres via `cmd/storage`** — Connect Compose prêt ; sink vérifiable = Go+pgx
+- [ ] **Grafana / Prometheus**
+- [ ] **Multi-région / MirrorMaker**
+- [ ] **Schema Registry**
 
 ### Robustesse
 
-- [x] **Retry + DLQ + idempotence `event_id`** — *Pourquoi* : poison et doublons HTTP sont réalistes. *Sert à* : files d’erreurs et alertes uniques.
-- [x] **Acks / producer idempotent** — *Pourquoi* : perte silencieuse côté producteur. *Sert à* : reliability du chemin critique.
-- [x] **Transactions EOS (`eos-alert`)** — *Pourquoi* : at-least-once ne suffit pas pour les alertes. *Sert à* : write alerte + commit offset atomiques.
-- [x] **Lag + SASL/PLAIN ACL + `go test`** — *Pourquoi* : sans lag visible et sans auth, le debug est aveugle. *Sert à* : observabilité minimale et overlay sécu.
-- [ ] **Auth HTTP (JWT) + rate limiting** — *Pourquoi* : `/telemetry` ouvert par défaut. *Sert à* : contrôler qui injecte.
-- [ ] **UI carte temps réel** — *Pourquoi* : hors objectif Kafka. *Sert à* : visualisation métier des bus.
+- [x] **Retry + DLQ + dedup `event_id`**
+- [x] **Acks=all + producer idempotent (défaut franz-go)**
+- [x] **Transactions EOS (`eos-alert`)**
+- [x] **Lag CLI + SASL overlay + `go test`**
+- [ ] **Auth HTTP (JWT) + rate limiting**
+- [ ] **UI carte temps réel**
+
+## Documentation
+
+- [docs/runbook.md](docs/runbook.md) — boot démo bout-en-bout
+- [docs/consumer-lag.md](docs/consumer-lag.md) — mesurer le lag
+- [docs/partitions-vehicle-id.md](docs/partitions-vehicle-id.md) — coloc clé / partition
