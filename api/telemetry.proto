@@ -11,4 +11,5 @@ message TelemetryEvent {
   double longitude = 4;
   double speed = 5;
   int64 timestamp_unix_ms = 6;
+  double heading_deg = 7; // optional by nature in proto3
 }

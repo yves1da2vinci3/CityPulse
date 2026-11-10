@@ -16,17 +16,19 @@ func ToProto(e TelemetryEvent) *eventsv1.TelemetryEvent {
 		Longitude:       e.Longitude,
 		Speed:           e.Speed,
 		TimestampUnixMs: e.Timestamp.UTC().UnixMilli(),
+		HeadingDeg:      e.HeadingDeg,
 	}
 }
 
 func FromProto(p *eventsv1.TelemetryEvent) TelemetryEvent {
 	return TelemetryEvent{
-		EventID:   p.GetEventId(),
-		VehicleID: p.GetVehicleId(),
-		Latitude:  p.GetLatitude(),
-		Longitude: p.GetLongitude(),
-		Speed:     p.GetSpeed(),
-		Timestamp: time.UnixMilli(p.GetTimestampUnixMs()).UTC(),
+		EventID:    p.GetEventId(),
+		VehicleID:  p.GetVehicleId(),
+		Latitude:   p.GetLatitude(),
+		Longitude:  p.GetLongitude(),
+		Speed:      p.GetSpeed(),
+		Timestamp:  time.UnixMilli(p.GetTimestampUnixMs()).UTC(),
+		HeadingDeg: p.GetHeadingDeg(),
 	}
 }
 

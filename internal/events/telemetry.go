@@ -13,12 +13,13 @@ const TopicTelemetryDLQ = "telemetry.dlq"
 const TopicAlerts = "alerts.events"
 
 type TelemetryEvent struct {
-	EventID   string    `json:"event_id"`
-	VehicleID string    `json:"vehicle_id"`
-	Latitude  float64   `json:"latitude"`
-	Longitude float64   `json:"longitude"`
-	Speed     float64   `json:"speed"`
-	Timestamp time.Time `json:"timestamp"`
+	EventID    string    `json:"event_id"`
+	VehicleID  string    `json:"vehicle_id"`
+	Latitude   float64   `json:"latitude"`
+	Longitude  float64   `json:"longitude"`
+	Speed      float64   `json:"speed"`
+	Timestamp  time.Time `json:"timestamp"`
+	HeadingDeg float64   `json:"heading_deg,omitempty"`
 }
 
 func NewEventID() string {

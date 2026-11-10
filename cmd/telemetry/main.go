@@ -14,12 +14,13 @@ import (
 )
 
 type postBody struct {
-	EventID   string    `json:"event_id"`
-	VehicleID string    `json:"vehicle_id"`
-	Latitude  float64   `json:"latitude"`
-	Longitude float64   `json:"longitude"`
-	Speed     float64   `json:"speed"`
-	Timestamp time.Time `json:"timestamp"`
+	EventID    string    `json:"event_id"`
+	VehicleID  string    `json:"vehicle_id"`
+	Latitude   float64   `json:"latitude"`
+	Longitude  float64   `json:"longitude"`
+	Speed      float64   `json:"speed"`
+	Timestamp  time.Time `json:"timestamp"`
+	HeadingDeg float64   `json:"heading_deg"`
 }
 
 func main() {
@@ -46,12 +47,13 @@ func main() {
 			return
 		}
 		ev := events.TelemetryEvent{
-			EventID:   in.EventID,
-			VehicleID: in.VehicleID,
-			Latitude:  in.Latitude,
-			Longitude: in.Longitude,
-			Speed:     in.Speed,
-			Timestamp: in.Timestamp,
+			EventID:    in.EventID,
+			VehicleID:  in.VehicleID,
+			Latitude:   in.Latitude,
+			Longitude:  in.Longitude,
+			Speed:      in.Speed,
+			Timestamp:  in.Timestamp,
+			HeadingDeg: in.HeadingDeg,
 		}
 		if ev.EventID == "" {
 			ev.EventID = events.NewEventID()
