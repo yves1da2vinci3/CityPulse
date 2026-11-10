@@ -198,28 +198,28 @@ KAFKA_BROKERS=localhost:9092 go test ./internal/kafka -count=1
 
 ## Checklist Scalabilité et Robustesse
 
-> Projet fictif — implémenté vs extensions futures.
+> Projet fictif — checklist indiquant ce qui est implémenté vs extensions prod futures.
 
 ### Scalabilité
 
-- [x] **Infra KRaft locale (Compose)** — mono-nœud + `docker-compose.ha.yml` 3 nœuds
-- [x] **Producer HTTP + Protobuf** — JSON in, proto on wire, `heading_deg` optionnel
-- [x] **3 consumer groups** — analytics / storage / alert
-- [x] **Clé `vehicle_id`** — sticky partition
-- [x] **Stream fenêtre 5 min** — `cmd/stream`
-- [x] **Postgres via `cmd/storage`** — Connect Compose prêt ; sink vérifiable = Go+pgx
-- [ ] **Grafana / Prometheus**
-- [ ] **Multi-région / MirrorMaker**
-- [ ] **Schema Registry**
+- [x] **Infra KRaft locale (Compose)** — *Pourquoi* : ZooKeeper ajoute de la friction sans gain. *Sert à* : un broker (puis 3 nœuds HA) prêt en une commande.
+- [x] **Producer HTTP + Protobuf** — *Pourquoi* : le client métier ne parle pas Kafka ; JSON seul fige le schéma. *Sert à* : JSON in → Protobuf on wire (`heading_deg` optionnel).
+- [x] **3 consumer groups sur le même topic** — *Pourquoi* : un seul consumer = couplage. *Sert à* : analytics, storage et alert indépendants.
+- [x] **Clé `vehicle_id`** — *Pourquoi* : sans clé, l’ordre par bus est aléatoire. *Sert à* : sticky partition + ordering.
+- [x] **Cluster 3 nœuds KRaft** — *Pourquoi* : mono-nœud = single point of failure. *Sert à* : redondance locale via `docker-compose.ha.yml`.
+- [x] **Stream fenêtre 5 min + Postgres** — *Pourquoi* : Kafka seul n’agrège ni ne stocke en SQL. *Sert à* : `cmd/stream` + sink `cmd/storage` (pgx) ; Connect Compose en option.
+- [ ] **Grafana / Prometheus** — *Pourquoi* : le lag CLI est un snapshot. *Sert à* : dashboards et alertes continues.
+- [ ] **Multi-région / MirrorMaker** — *Pourquoi* : un cluster Abidjan ne couvre pas plusieurs pays. *Sert à* : réplication inter-régions.
+- [ ] **Schema Registry** — *Pourquoi* : Protobuf local suffit ici. *Sert à* : gouvernance de schémas en équipe.
 
 ### Robustesse
 
-- [x] **Retry + DLQ + dedup `event_id`**
-- [x] **Acks=all + producer idempotent (défaut franz-go)**
-- [x] **Transactions EOS (`eos-alert`)**
-- [x] **Lag CLI + SASL overlay + `go test`**
-- [ ] **Auth HTTP (JWT) + rate limiting**
-- [ ] **UI carte temps réel**
+- [x] **Retry + DLQ + idempotence `event_id`** — *Pourquoi* : poison et doublons HTTP sont réalistes. *Sert à* : files d’erreurs et alertes uniques.
+- [x] **Acks=all + producer idempotent** — *Pourquoi* : perte silencieuse côté producteur. *Sert à* : reliability du chemin critique (idempotence franz-go par défaut).
+- [x] **Transactions EOS (`eos-alert`)** — *Pourquoi* : at-least-once ne suffit pas pour les alertes. *Sert à* : write alerte + commit offset atomiques.
+- [x] **Lag + SASL/PLAIN ACL + `go test`** — *Pourquoi* : sans lag visible et sans auth, le debug est aveugle. *Sert à* : observabilité minimale et overlay sécu.
+- [ ] **Auth HTTP (JWT) + rate limiting** — *Pourquoi* : `/telemetry` ouvert par défaut. *Sert à* : contrôler qui injecte.
+- [ ] **UI carte temps réel** — *Pourquoi* : hors objectif Kafka. *Sert à* : visualisation métier des bus.
 
 ## Documentation
 
