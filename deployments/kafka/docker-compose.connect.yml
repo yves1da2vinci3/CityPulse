@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: citypulse-pg
+    environment:
+      POSTGRES_USER: citypulse
+      POSTGRES_PASSWORD: citypulse
+      POSTGRES_DB: citypulse
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U citypulse"]
+      interval: 5s
+      retries: 10
+
+  connect:
+    image: debezium/connect:2.7
+    container_name: citypulse-connect
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: citypulse-connect
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+      KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
