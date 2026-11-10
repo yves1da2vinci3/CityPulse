@@ -35,7 +35,7 @@ func main() {
 	err = cpkafka.RunConsumer(ctx, cl, func(ctx context.Context, rec *kgo.Record) error {
 		var last error
 		process := func() error {
-			_, err := events.DecodeTelemetry(rec.Value)
+			_, err := events.UnmarshalProto(rec.Value)
 			last = err
 			return err
 		}
@@ -50,7 +50,7 @@ func main() {
 			log.Printf("DLQ: %v", err)
 			return cl.CommitRecords(ctx, rec)
 		}
-		ev, _ := events.DecodeTelemetry(rec.Value)
+		ev, _ := events.UnmarshalProto(rec.Value)
 		if store.SeenOrAdd(ev.EventID) {
 			log.Printf("dedup skip event=%s", ev.EventID)
 		} else if ev.Speed > 100 {

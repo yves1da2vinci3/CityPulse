@@ -29,7 +29,7 @@ func main() {
 
 	log.Println("storage consuming")
 	err = cpkafka.RunConsumer(ctx, cl, func(ctx context.Context, rec *kgo.Record) error {
-		ev, err := events.DecodeTelemetry(rec.Value)
+		ev, err := events.UnmarshalProto(rec.Value)
 		if err != nil {
 			log.Printf("storage bad: %v", err)
 			return cl.CommitRecords(ctx, rec)

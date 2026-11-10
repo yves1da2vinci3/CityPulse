@@ -5,6 +5,7 @@ go 1.24.2
 require (
 	github.com/twmb/franz-go v1.18.1
 	github.com/twmb/franz-go/pkg/kadm v1.14.0
+	google.golang.org/protobuf v1.36.5
 )
 
 require (

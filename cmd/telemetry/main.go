@@ -59,7 +59,7 @@ func main() {
 		if ev.Timestamp.IsZero() {
 			ev.Timestamp = time.Now().UTC()
 		}
-		payload, err := ev.Marshal()
+		payload, err := events.MarshalProto(ev)
 		if err != nil {
 			http.Error(w, "encode", http.StatusInternalServerError)
 			return

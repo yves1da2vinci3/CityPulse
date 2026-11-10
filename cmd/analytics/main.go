@@ -29,7 +29,7 @@ func main() {
 
 	log.Println("analytics consuming", events.TopicTelemetry)
 	err = cpkafka.RunConsumer(ctx, cl, func(ctx context.Context, rec *kgo.Record) error {
-		ev, err := events.DecodeTelemetry(rec.Value)
+		ev, err := events.UnmarshalProto(rec.Value)
 		if err != nil {
 			log.Printf("skip bad record partition=%d offset=%d: %v", rec.Partition, rec.Offset, err)
 			if err := cl.CommitRecords(ctx, rec); err != nil {

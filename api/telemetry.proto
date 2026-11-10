@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package citypulse.v1;
+
+option go_package = "github.com/yves1da2vinci3/CityPulse/internal/events/v1;eventsv1";
+
+message TelemetryEvent {
+  string event_id = 1;
+  string vehicle_id = 2;
+  double latitude = 3;
+  double longitude = 4;
+  double speed = 5;
+  int64 timestamp_unix_ms = 6;
+}
