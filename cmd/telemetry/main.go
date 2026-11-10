@@ -23,7 +23,12 @@ type postBody struct {
 }
 
 func main() {
-	cl, err := cpkafka.NewClient(config.Brokers(), kgo.AllowAutoTopicCreation())
+	// Idempotent produce ON by default in franz-go (omit DisableIdempotentWrite).
+	cl, err := cpkafka.NewClient(
+		config.Brokers(),
+		kgo.RequiredAcks(kgo.AllISRAcks()),
+		kgo.AllowAutoTopicCreation(),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
