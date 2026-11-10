@@ -2,3 +2,6 @@
 .bin/
 /telemetry
 *.exe
+
+/saslping
+/kafkaping
